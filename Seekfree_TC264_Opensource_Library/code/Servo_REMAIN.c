@@ -32,6 +32,10 @@ static int32  servo_step_duty  = (int32)SERVO_DUTY_MID; // ·Öµµ´ò½Ç£ºµ±Ç°µµÎ»µÄÕ
 static int8   servo_step_level = 0;                     // ·Öµµ´ò½Ç£ºµ±Ç°µµÎ» -2/-1/0/+1/+2
 static uint8  servo_step_hold  = 0;                     // ·Öµµ´ò½Ç£º±¾µµÒÑ±£³ÖµÄÅÄÊý
 static int32  servo_duty_now   = (int32)SERVO_DUTY_MID;  // µ±Ç°Êµ¼ÊÐ´³öµÄÕ¼¿Õ±È£¨µ÷ÊÔÓÃ£©
+static int32  servo_move_duty   = (int32)SERVO_DUTY_MID; // ×î½üÒ»´Î"ÔÚÍäÀï"Êä³öµÄµµÎ»Õ¼¿Õ±È
+static uint16 servo_turn_ticks  = 0;                     // ±¾´ÎÁ¬Ðø´ò½ÇÒÑ³ÖÐøµÄÅÄÊý£¨1 ÅÄ = 5ms£©
+static uint16 servo_release_ticks = 0;                   // ³¤Íä³öÍäºóÊ£Óà±£³ÖÅÄÊý£¨>0 ±íÊ¾ÕýÔÚÑÓÊ±»ØÖÐ£©
+static int32  servo_release_duty  = (int32)SERVO_DUTY_MID; // ³öÍä±£³ÖÊ±Ëø¶¨µÄÕ¼¿Õ±È
 
 //-------------------------------------------------------------------------------------------------------------------
 // º¯Êý¼ò½é     ¶æ»ú³õÊ¼»¯
@@ -51,6 +55,10 @@ void Servo_Init(void)
     servo_step_duty  = (int32)SERVO_DUTY_MID;
     servo_step_level = 0;
     servo_step_hold  = 0;
+    servo_move_duty  = (int32)SERVO_DUTY_MID;
+    servo_turn_ticks = 0;
+    servo_release_ticks = 0;
+    servo_release_duty  = (int32)SERVO_DUTY_MID;
     Servo_Set_Duty((int32)SERVO_DUTY_MID);
 }
 
@@ -290,6 +298,8 @@ void Servo_Set_Offset(float offset)
     servo_mode     = 1;
     servo_hold_cnt = 0;                                 /* ´¿×·×Ù½Ó¹ÜÊ±²»Òª²ÐÁô³öÍä±£³Ö */
     servo_armed    = 0;
+    servo_turn_ticks    = 0;                            /* ×ßÁ¬ÐøÍ¨Â·Ê±Çåµô·ÖµµµÄ³¤ÍäÑÓÊ±×´Ì¬ */
+    servo_release_ticks = 0;
 
     Servo_Set_Duty(SERVO_DUTY_FROM_OUT(offset));                /* ¼«ÐÔÓÉ SERVO_DIR ¾ö¶¨ */
 }
@@ -303,6 +313,7 @@ void Servo_Set_Offset(float offset)
 // ±¸×¢ÐÅÏ¢     1. ºÍ Servo_Set_Turn / Servo_Set_Offset ×ßÍ¬Ò»ÌõÊä³öÍ¨Â·£¬ÈýÕß¿ÉÒÔÈÎÒâÇÐ»»£»
 //              2. ½ø³öµµÓÃ²»Í¬ãÐÖµ£¨ÖÍ»·£©£¬²¢ÇÒÃ¿µµÖÁÉÙÍ£Áô SERVO_STEP_DWELL_TICKS ÅÄ£¬Ñ¹µô¶¶¶¯£»
 //              3. Â·¿Ú£¨force_center£©²»ÊÜÍ£ÁôÏÞÖÆ£¬Á¢¿Ì»ØÖÐÎ»¡ª¡ªÕâÊÇ"Ê®×ÖÂ·¿ÚÒ»¶¨Ö±ÐÐ"µÄ×îºóÒ»µÀ±£ÏÕ¡£
+//              4. ³¤Íä£¨Á¬Ðø´ò½Ç >= 1.0s£©³öÍäÊ±²»Á¢¿Ì»ØÖÐ£¬ÏÈ°Ñ³öÍä½Ç¶È±£³Ö 0.4s£¨SERVO_LONG_EXIT_* ¿Éµ÷/¿É¹Ø£©¡£
 //-------------------------------------------------------------------------------------------------------------------
 void Servo_Set_Step(float demand_deg, uint8 force_center)
 {
@@ -333,6 +344,8 @@ void Servo_Set_Step(float demand_deg, uint8 force_center)
         servo_mode       = 1;
         servo_hold_cnt   = 0;
         servo_armed      = 0;
+        servo_turn_ticks = 0;                           /* Â·¿ÚÇ¿Ö±ÐÐ£º°Ñ³¤ÍäÑÓÊ±»ØÖÐÒ²Ò»²¢Çåµô */
+        servo_release_ticks = 0;
         Servo_Set_Duty((int32)SERVO_DUTY_MID);
         return;
     }
@@ -416,6 +429,42 @@ void Servo_Set_Step(float demand_deg, uint8 force_center)
         case -4: duty = (SERVO_STEP_DIR > 0) ? (int32)SERVO_DUTY_L_HUGE  : (int32)SERVO_DUTY_R_HUGE;  break;
         default: duty = (int32)SERVO_DUTY_MID;                                                        break;
     }
+
+    /* 4.5 ³¤Íä³öÍäÑÓÊ±»ØÖÐ£¨ÐèÇó£º×ªÍäÊ±¼ä³¬¹ý 1 Ãë£¬³öÍäÊ±ÏÈ±£³Ö 0.4 ÃëÔÙ»ØÖÐÎ»£©
+           1) »¹ÔÚÍäÀï£¨want != 0£©£ºÀÛ¼Æ×ªÍäÅÄÊý£¬²¢¼Ç×¡µ±Ç°ÍäµÀ½Ç¶È£»
+           2) ¸Õ³öÍä¡¢ÇÒÕâ´ÎÍäÒÑ¾­³ÖÐø >= SERVO_LONG_TURN_TICKS£ºËø¶¨³öÍäÄÇÒ»¿ÌµÄ½Ç¶È£¬ÑÓÊ± SERVO_LONG_EXIT_TICKS ÅÄ£»
+           3) ÑÓÊ±ÆÚ¼äÐèÇóÓÖ±ä´ó£¨½øÐÂÍä£©£ºÁ¢¿ÌÈ¡Ïû±£³Ö£¬ÕÕ³£´ò½Ç¡£ */
+#if (1 == SERVO_LONG_EXIT_EN)
+    if((want >= 2) || (want <= -2))                      /* ÕæµÄÔÚÍäÀï£¨Ð¡µµ¼°ÒÔÉÏ²ÅËã×ªÍä£¬Î¢µ÷µµ²»Ëã£© */
+    {
+        servo_move_duty = duty;                         /* ¼Ç×¡"ÍäÀïÓÃµÄ½Ç¶È"£¬³öÍäÊ±¾ÍÓÃËüÑÓÊ± */
+        if(servo_turn_ticks < 60000u)
+        {
+            servo_turn_ticks ++;
+        }
+        servo_release_ticks = 0;                        /* »¹ÔÚÍäÀï£¬È¡ÏûÎ´Íê³ÉµÄÑÓÊ± */
+    }
+    else if(servo_release_ticks > 0u)
+    {
+        servo_release_ticks --;
+        duty = servo_release_duty;                      /* ±£³Ö³öÍä½Ç¶È£¬ÕâÒ»ÅÄ»¹²»»ØÖÐÎ» */
+    }
+    else if((servo_turn_ticks >= SERVO_LONG_TURN_TICKS) && (servo_move_duty != (int32)SERVO_DUTY_MID))
+    {
+        servo_release_duty  = servo_move_duty;
+        servo_release_ticks = SERVO_LONG_EXIT_TICKS;
+        servo_turn_ticks    = 0;
+        duty = servo_release_duty;                      /* ³öÍäÕâÒ»ÅÄ¾Í¿ªÊ¼±£³Ö£¬²»Á¢¿Ì»ØÖÐ */
+    }
+    else
+    {
+        servo_turn_ticks = 0;                           /* ¶ÌÍä£¨< 1s£©»òÖ±µÀÎ¢µ÷£ºÖ±½Ó»ØÖÐÎ» */
+        if(0 == want)
+        {
+            servo_move_duty = (int32)SERVO_DUTY_MID;    /* ÒÑ¾­»ØÖÐÁË£¬ÇåµôËø´æ½Ç¶È£¬±ÜÃâÏÂ´ÎÎó±£³Ö */
+        }
+    }
+#endif
 
     servo_step_duty = duty;
     servo_mode      = 1;

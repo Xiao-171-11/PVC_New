@@ -111,6 +111,13 @@
 #define SERVO_STEP_HUGE_OUT     (7.50f)                 // |需求| < 7.50° 才退到大档
 #define SERVO_STEP_DWELL_TICKS  (1)                     // 每档至少保持 1 拍 = 5ms（急弯要快要跟得上）
 
+/* 长弯出弯延时回中（需求：连续转弯超过 1 秒，出弯时先保持当时的打角 0.4 秒再回中位）
+   作用：大弯/发夹弯出弯瞬间如果立刻回中，车身会"甩"一下（残余侧偏 + 惯性），
+         保持一会儿出弯角度能让车先摆正再回中。 */
+#define SERVO_LONG_EXIT_EN      (1)                     // 1 = 启用长弯延时回中；0 = 出弯立刻回中（老行为）
+#define SERVO_LONG_TURN_TICKS   (200)                   // 连续打角 >= 200 拍 = 1.00s 才算"长弯"
+#define SERVO_LONG_EXIT_TICKS   (80)                    // 长弯出弯后再保持 80 拍 = 0.40s 才回中位
+
 void Servo_Init     (void);                             // 初始化舵机 PWM
 void Servo_Set_Duty (int32 duty);                       // 直接输出占空比（内部限幅）
 void Servo_Set_Turn (float error);                      // 按中线偏差打角
