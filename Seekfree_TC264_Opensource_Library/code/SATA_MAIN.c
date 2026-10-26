@@ -3,16 +3,25 @@
  *
  *  主程序：外设初始化 + 主循环 + 每一帧的图像处理
  *
- *  运行结构（对应教程第 13~25 集）：
- *      主循环（约 50fps）  ：大津法二值化 -> 边缘基点 -> 边缘基线 -> 加权中线
+ *  运行结构：
+ *      主循环（约 50fps）  ：大津法二值化 -> 斑马线 -> 边缘基点 -> 边缘基线
+ *                            -> 逐行真实边界 + 加权中线（含十字路口判定）
  *      5ms 中断（200Hz）   ：编码器测速 -> 速度环 PID -> 差速 -> 电机 PWM
- *                            中线偏差 -> 舵机 PD -> 舵机 PWM
- *      两者通过 midline_info.error 交换数据
+ *                            中线偏差 -> 分档打角 -> 舵机 PWM
+ *      两者通过 midline_info.error / conf / cross 交换数据
+ *
+ *  注意：逆透视（IPM）+ 纯追踪（Pursuit）已经撤出主流水线，
+ *        改由 MIDLine 的加权中线 + 多特征十字路口判定直接驱动打角。
+ *        源文件保留，把下面的 SATA_PURSUIT_EN 改回 1 就能恢复对比。
  *
  *  Created on: 2026年10月20日
  *      Author: Freed
  */
 #include "SATA_MAIN.h"
+
+/* 1-恢复"逆透视 + 纯追踪"流水线（老方案，仅用于对比调试）
+ * 0-加权中线判定法（当前方案）：不做逆透视、不跑纯追踪，省掉每帧查表与俯视图处理 */
+#define SATA_PURSUIT_EN     (0)
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     外设初始化
@@ -24,8 +33,10 @@
 static void SATA_Init(void)
 {
     Camera_LCD_Init();                                  // 总钻风 MT9V03X + TFT180
+#if (1 == SATA_PURSUIT_EN)
     IPM_Init();                                         // 逆透视查表（必须在摄像头初始化之后）
     Pursuit_Init();                                     // 纯追踪状态机复位
+#endif
     Badpoint_Init();                                    // 清空边缘基点信息
     Bedline_Init();                                     // 清空边缘基线信息
     MIDLine_Init();                                     // 清空中线信息
@@ -55,18 +66,32 @@ static void SATA_Frame_Process(void)
 
     Find_Badpoint(base_image[0], MT9V03X_W, MT9V03X_H); // 边缘基点
     Find_Bedline (base_image[0], MT9V03X_W, MT9V03X_H); // 边缘基线
-    Find_MIDLine ();                                    // 加权求中线值 + 互补滤波
+    Find_MIDLine ();                                    // 逐行真实边界 + 加权中线 + 十字路口判定
 
+#if (1 == SATA_PURSUIT_EN)
     IPM_Process(base_image[0]);                         // 逆透视：188x120 -> 俯视图 56x96（查表，纯内存拷贝）
     IPM_Show_On_TFT180();                               // IPM_DIS_EN=0 时是空函数；标定时打开看俯视图
     Pursuit_Process();                                  // 纯追踪：俯视图找边线 -> 前瞻点 -> 曲率 -> 舵机偏移
+#endif
 
+    /* ---- 屏幕只显示"处理后的图像"（二值化图 + 绿色加权中线 + 蓝色真实边界）----
+     * 本轮需求：屏幕上不再显示任何数据。所以基点/基线/斑马线/轮速这几个"纯文字"的
+     * 显示函数全部停用；它们画在图上的十字/基线也随之不画（那是标定用的，比赛不需要）。
+     * 想调参时把下面 4 行放开、并把 Camera_REMAIN.h 的 CAMERA_DIS_INFO 改回 1 即可。 */
+#if 0
     Badpoint_Show_On_TFT180();                          // 基点十字 + 基点列号
     Bedline_Show_On_TFT180();                           // 基线直线 + 基线斜率
-    MIDLine_Show_On_TFT180();                           // 中线（绿色）+ 中线值 + 偏差
+#endif
+    MIDLine_Show_On_TFT180();                           // 中线（绿）+ 真实边界（蓝）；文字由 CAMERA_DIS_INFO 控制
+#if 0
     Zebra_Show_On_TFT180();                             // 起停状态 W/R/F
+#endif
+#if (1 == SATA_PURSUIT_EN)
     Pursuit_Show_On_TFT180();                           // 纯追踪：曲率 / 转角 / 打角 / 路口标志
-    Control_Show_On_TFT180();                           // 最底部一行轮速（6x8 小字，y=148，不压图像）
+#endif
+#if 0
+    Control_Show_On_TFT180();                           // 最底部一行轮速（6x8 小字）
+#endif
 }
 
 //-------------------------------------------------------------------------------------------------------------------

@@ -146,7 +146,7 @@ void Camera_Binarize(uint8 threshold)
 //-------------------------------------------------------------------------------------------------------------------
 void Camera_LCD_Dis_Show(void)
 {
-    tft180_show_gray_image(0, 0, base_image[0],
+    tft180_show_gray_image(CAMERA_DIS_X0, CAMERA_DIS_Y0, base_image[0],
                            MT9V03X_W, MT9V03X_H,
                            CAMERA_DIS_W, CAMERA_DIS_H,
                            128);
@@ -161,7 +161,7 @@ void Camera_LCD_Dis_Show(void)
 //-------------------------------------------------------------------------------------------------------------------
 void Camera_LCD_Dis_Raw(void)
 {
-    tft180_show_gray_image(0, 0, mt9v03x_image[0],
+    tft180_show_gray_image(CAMERA_DIS_X0, CAMERA_DIS_Y0, mt9v03x_image[0],
                            MT9V03X_W, MT9V03X_H,
                            CAMERA_DIS_W, CAMERA_DIS_H,
                            0);

@@ -5,11 +5,13 @@
  *
  *  1. 上电延时 START_DELAY 内：电机停转、舵机回中
  *  2. 从 midline_info.error 取中线偏差（丢线时沿用上一次，连续丢太久就停车）
- *  3. 舵机：Servo_Set_Turn(error)          —— 比例 / PD 打角
+ *  3. 舵机：Servo_Set_Step(打角需求, 强制回中)   —— 偏差(像素) -> 角度 -> 分档打角
+ *          十字路口只限幅不打死（保持进路口前的航向），除非打开了 CONTROL_CROSS_FORCE_CENTER
  *  4. 后轮差速：后左轮 = 基础速度 * (1 + ratio)
  *               后右轮 = 基础速度 * (1 - ratio)     ratio = K * 偏差（比例模型，随车速等比放大）
  *               —— 偏差为正（赛道偏右）时车右转，后左轮(外侧)快、后右轮(内侧)慢
  *  5. 速度环：前馈占空比 + PID 修正，输出给后轮电机
+ *  6. 加权中线置信度 conf 低时降速（MIdLine 的 conf：丢线越多越小）
  *
  *  Created on: 2026年10月21日
  *      Author: Freed
@@ -317,9 +319,13 @@ void Control_Tick(void)
         control_last_error = error;
         control_lost_tick  = 0;
     }
-    else                                                // 丢线：沿用上一次的偏差
+    else                                                // 丢线：偏差按指数回中
     {
-        error = control_last_error;
+        /* 老代码是 error = control_last_error，也就是"一直按着最后一次看到线的那个角打舵"。
+         * 路口正中、横臂占满画面时必然丢线，于是车就带着一个固定的打角一路拐出赛道。
+         * 这里改成每拍往中位收一点：看不见赛道时最安全的方向就是回正。 */
+        error = control_last_error * CONTROL_LOST_DECAY;
+        control_last_error = error;
         if(control_lost_tick < 60000)
         {
             control_lost_tick ++;
@@ -333,39 +339,56 @@ void Control_Tick(void)
         return;
     }
 
-    // 3. 舵机：纯追踪优先，算不出来再退回"偏差 -> 分段 PD"
+    /* ---- 路口内：不追中线，沿车身方向直行（本轮核心修复）----
+     * 路口里算出来的中线一定是错的：横臂开口、远端错位、直角外推，三种几何都会把中线拉向横臂。
+     * PID 越"忠实"地追这条错中线，车就越是往横臂里拐 —— 这就是"十字路口转弯"。
+     * 进路口那一刻车身的方向才是对的：把偏差清 0，舵机回中位（= 前轮摆正 = 沿车身直行），
+     * 用车身惯性穿过路口，等出路口（EXIT 之后）重新抓线再纠偏。
+     * 注意：这不是"回中位纠偏"，error = 0 的含义是"不纠偏"。 */
+    if(MIDLINE_CROSS_ST_INSIDE == midline_info.cross_state)
+    {
+        error = 0.0f;
+    }
+
+    // 3. 舵机：中线加权偏差 -> 分档打角（纯追踪已撤出流水线，CONTROL_PURSUIT_EN = 0）
 #if (1 == CONTROL_PURSUIT_EN)
     control_use_pursuit = Pursuit_Get(&control_ps);      // 0 = 纯追踪这一帧不可信（标定表没好/视野太差）
 #endif
 
 #if (1 == CONTROL_STEP_STEER_EN)
     /* 分档打角：舵机只认 5 个档位（460 / 440 / 474 / 418 / 500）。
-     * 1) 打角需求：优先用纯追踪算出来的角度；没有纯追踪就把中线偏差按比例换成角度。
-     * 2) 路口：force_center = 1 → Servo_Set_Step 立刻回中位 460，无论需求是多少。
-     *    这是"十字路口一定直行"的硬保险：纯追踪说路口、或老算法说路口，任意一个成立就回中。 */
+     * 1) 打角需求：中线偏差(像素) 按 CONTROL_ERR_PX_TO_DEG 换成角度，正 = 向右；
+     *              开着纯追踪时优先用它算出来的角度。
+     * 2) 十字路口：CONTROL_CROSS_FORCE_CENTER = 1 强制回中位 460（老行为）；
+     *              = 0 改成"限幅"：需求被压到 ±CONTROL_CROSS_STEER_MAX_DEG，
+     *              车保持进路口前的航向穿过去，只允许小幅修正，绝不打死方向。 */
     control_steer_demand = 0.0f;
     control_force_center = 0;
 
     if(1 == control_use_pursuit)
     {
         control_steer_demand = control_ps.delta_deg;                 // 正 = 向右
-        if(0 != control_ps.cross)
-        {
-            control_force_center = 1;
-        }
     }
     else
     {
         control_steer_demand = error * CONTROL_ERR_PX_TO_DEG;        // 正偏差 = 赛道偏右 = 往右打
-        if(midline_info.cross)
-        {
-            control_force_center = 1;
-        }
     }
 
-    if(0 != control_force_center)
+    if(midline_info.cross_state == MIDLINE_CROSS_ST_INSIDE)          // 路口内
     {
-        Servo_Clear_Hold();                                          // 路口不要残留出弯保持
+        Servo_Clear_Hold();                                          // 不要残留出弯保持
+#if (1 == CONTROL_CROSS_FORCE_CENTER)
+        control_force_center = 1;                                    // 老行为：硬回中位
+#else
+        if(control_steer_demand > CONTROL_CROSS_STEER_MAX_DEG)
+        {
+            control_steer_demand = CONTROL_CROSS_STEER_MAX_DEG;
+        }
+        if(control_steer_demand < -CONTROL_CROSS_STEER_MAX_DEG)
+        {
+            control_steer_demand = -CONTROL_CROSS_STEER_MAX_DEG;
+        }
+#endif
     }
 
     Servo_Set_Step(control_steer_demand, control_force_center);
@@ -628,17 +651,12 @@ void Control_Tick(void)
         control_ff_gain_r = control_ff_gain_l;
     }
 
-    // 6. 弯道减速 + 后轮差速
-    //    纯追踪接管时：slow 由前轮转角直接给出，ratio 由曲率乘后轮距给出，都是几何物理量
-    //    退回老算法时：偏差越大 -> 弯越急 -> 基础速度先降下来，避免高速冲弯打不动方向
+    // 6. 减速 + 后轮差速
+    //    哪条打角方案都一样：偏差越大 -> 弯越急 -> 基础速度先降下来，避免高速冲弯打不动方向
     if(1 == control_use_pursuit)
     {
         slow  = control_ps.slow;
         ratio = control_ps.ratio;
-        if(control_ps.cross)                            // 路口横臂补出来的线不可信，慢一点
-        {
-            slow = slow * CONTROL_CROSS_SPEED_SCALE;
-        }
         if(control_ps.off_track)                        // 车已经压到赛道边缘，先保命
         {
             slow = slow * CONTROL_OFFTRACK_SPEED_SCALE;
@@ -647,25 +665,59 @@ void Control_Tick(void)
         {
             slow = 0.25f;
         }
-        base_speed = CONTROL_BASE_SPEED * slow;
     }
     else
     {
         abs_err = (error > 0.0f) ? (error) : (-error);
         slow    = 1.0f - (CONTROL_CURVE_SLOW_K * abs_err);
         if(slow < CONTROL_CURVE_SLOW_MIN) slow = CONTROL_CURVE_SLOW_MIN;
-        base_speed = CONTROL_BASE_SPEED * slow;
+
+        /*    弯道降速太狠：把"被降掉的那部分"按 CONTROL_CURVE_SLOW_GAIN 收窄
+         *    （当前 1.21 = 两轮 +10% 的累计，等效弯道速度比原始设计 x1.21）。
+         *    注意乘完要夹回 1.0：直道 slow 本来就是 1，乘完会大于 1，必须夹住，
+         *    否则直道会比设定的基础速度还快。 */
+        slow = slow * CONTROL_CURVE_SLOW_GAIN;
+        if(slow > 1.0f) slow = 1.0f;
 
         //    后轮差速：偏差为正（赛道偏右）-> 车的右转弯 -> 后左轮(外侧)快、后右轮(内侧)慢
         ratio = CONTROL_DIFF_K * error;
         if(ratio >  CONTROL_DIFF_K_MAX) ratio =  CONTROL_DIFF_K_MAX;
         if(ratio < -CONTROL_DIFF_K_MAX) ratio = -CONTROL_DIFF_K_MAX;
     }
+
+    /* ---- 加权中线专用：置信度降速 ----
+     * conf = Σw / 满权重。丢线多、远端被截断、只剩单侧边线时 conf 会掉，
+     * 说明这一帧的中线不可信，先降速把画面重新看全，比"带着脏中线高速冲"安全得多。 */
+#if (1 == CONTROL_CONF_SLOW_EN)
+    if(midline_info.conf < CONTROL_CONF_REF)
+    {
+        float conf_scale = (float)midline_info.conf / (float)CONTROL_CONF_REF;
+        if(conf_scale < CONTROL_CONF_SLOW_MIN)
+        {
+            conf_scale = CONTROL_CONF_SLOW_MIN;
+        }
+        slow = slow * conf_scale;
+    }
+#endif
+
+    /* ---- 十字路口：降速 + 差速打折（横臂外侧的线不可信；差速会让车身横摆，路口最怕横摆） ---- */
+    if(midline_info.cross)
+    {
+        slow  = slow * CONTROL_CROSS_SPEED_SCALE;
+        ratio = ratio * CONTROL_CROSS_DIFF_SCALE;
+    }
+
+    if(slow < 0.20f)
+    {
+        slow = 0.20f;
+    }
+    base_speed = CONTROL_BASE_SPEED * slow;
+
 #if (1 == CONTROL_DIFF_REVERSE)
     ratio = -ratio;                                     // 差速方向反了的时候用
 #endif
 
-    control_base_speed_ref = base_speed;                // 下一帧纯追踪用它算前瞻距离
+    control_base_speed_ref = base_speed;                // 下一帧算前瞻距离用（纯追踪方案）
 
     target_l = base_speed * (1.0f + ratio);             // 后左轮
     target_r = base_speed * (1.0f - ratio);             // 后右轮
