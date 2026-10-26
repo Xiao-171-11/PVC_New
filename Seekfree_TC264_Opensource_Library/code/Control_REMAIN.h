@@ -19,14 +19,14 @@
 #define CONTROL_START_DELAY_MS       1000                                              // 上电延时 3s 再发车（0=不延时）
 
 /* ================================ 速度环 ================================ */
-#define CONTROL_BASE_SPEED           75.0f                                                                                                                                                       // 基础速度（编码器脉冲/周期）：150 -> 75，电机输出降到 50%
-#define CONTROL_SPEED_MAX            112.5f                                                                                                                                                      // 差速后的速度上限：225 -> 112.5（= 基础 75 x 1.5）
-#define CONTROL_SPEED_MIN            22.5f                                                                                                                                                       // 内侧轮最低速度：45 -> 22.5（内侧轮不要停转，否则等于拖刹）
-#define CONTROL_DUTY_BASE           (600)                   // 达到基础速度大致的占空比（前馈量）：1200 -> 600，与基础速度同步减半
+#define CONTROL_BASE_SPEED           90.0f                                                                                                                                                       // 基础速度（编码器脉冲/周期）：150 -> 75（减半）-> 90（再 +20%）
+#define CONTROL_SPEED_MAX            135.0f                                                                                                                                                      // 差速后的速度上限：112.5 -> 135（= 基础 90 x 1.5）
+#define CONTROL_SPEED_MIN            27.0f                                                                                                                                                       // 内侧轮最低速度：22.5 -> 27（内侧轮不要停转，否则等于拖刹）
+#define CONTROL_DUTY_BASE           (720)                   // 达到基础速度大致的占空比（前馈量）：600 -> 720，与基础速度同比例（增益仍是 8.0）
 #define CONTROL_PID_KP              (20.0f)                 // 速度环 Kp
 #define CONTROL_PID_KI              (0.5f)                  // 速度环 Ki
 #define CONTROL_PID_KD              (0.0f)                  // 速度环 Kd
-#define CONTROL_PID_OUT_MAX         (500.0f)                // 速度环输出限幅：1000 -> 500（目标速度减半，修正量同比例收紧）
+#define CONTROL_PID_OUT_MAX         (600.0f)                // 速度环输出限幅：500 -> 600（目标速度 +20%，修正量同比例放宽）
 
 /* ============================ 速度闭环开关 ============================ */
 /* 1-正常闭环；0-只用前馈开环跑（编码器还没接好、或想先确认车能走直线时用） */
@@ -61,14 +61,14 @@
 #define CONTROL_FF_OFFSET_MAX        (1200.0f)               // 死区补偿上限：实测死区 800~1000，给到 1200 就够，再大等于一直踩着油门
 #define CONTROL_FF_DUTY_AT_BASE_MAX  (4000.0f)               // 标定完用手算：base 速度对应的占空比超过它就不可信
 #define CONTROL_OVERSPEED_EN         (1)                     // 1-超速看门狗（实测速度远超目标就停车重新标定）
-#define CONTROL_OVERSPEED_SPEED      170.0f                                                                                                                                                    // 超速门限（脉冲/周期）：340 -> 170，跟基础速度 75 一起降，否则降速后永远触发不了
+#define CONTROL_OVERSPEED_SPEED      204.0f                                                                                                                                                    // 超速门限（脉冲/周期）：170 -> 204，跟基础速度 90 一起 +20%，否则提速后永远触发不了
 #define CONTROL_OVERSPEED_TICKS      (100)                   // 连续 100 拍（0.5 s）超速就动作
 
 /* ============================ 编码器掉线保护 ============================ */
 /* 给了占空比、轮子却一直读不到速度 -> 编码器没插好/定时器选错/供电没接。
  * 这时如果继续闭环保留积分，车会一脚油门冲出去，所以直接停车并在屏幕上显示 E。*/
 #define CONTROL_ENC_FAULT_EN        (1)                     // 1-开保护  0-不检查（先用 0 排查接线）
-#define CONTROL_ENC_FAULT_DUTY      (900.0f)                // 平均占空比超过这个值才算"真的在催"，降速后从 1800 降到 900（巡航占空比约 842，永远不会误触发）
+#define CONTROL_ENC_FAULT_DUTY      (1080.0f)               // 平均占空比超过这个值才算"真的在催"：900 -> 1080（巡航占空比约 962 = 720 + 死区 242，仍留 12% 余量，不会误触发）
 #define CONTROL_ENC_FAULT_TICKS     (200)                   // 且连续 200 拍（1 s）速度接近 0，就判故障
 #define CONTROL_ENC_CUT_TICKS       (100)                   // 判故障后停车 0.5 s 再自动重试（不锁死）
 #define CONTROL_ENC_RETRY_MAX       (5)                     // 连续失败几次后放弃重试（E 常亮当告警，但不再停车）
@@ -130,6 +130,13 @@
  * 0-退回连续打角（纯追踪 steer_out / 偏差分段 PD），出问题时改这里立刻对比 */
 #define CONTROL_STEP_STEER_EN       (1)
 #define CONTROL_ERR_PX_TO_DEG       (0.45f)                 // 偏差(像素) -> 打角需求(度)，没有纯追踪时用
+
+/* 直道调姿收窄：舵机只有 440/474 两档是"直道调姿"档，这里把直道上的打角需求整体乘 0.95，
+ * 也就是同样的偏差只打 95% 的角，进档更晚、出档更早，方向盘更稳。
+ * 判据用中线层本帧的结论（turn==0 且不在路口），不额外引入滞后；
+ * 弯道（474/418/500 大角）与路口（强制 460）完全不受影响。 */
+#define CONTROL_STRAIGHT_STEER_EN   (1)
+#define CONTROL_STRAIGHT_STEER_SCALE (0.95f)                // 直道打角幅度 ×0.95（即 -5%）
 
 /* ================================ 保护 ================================ */
 #define CONTROL_LOST_STOP_TICKS     (0)                     // 连续丢线后停车（0=不停车，弯道短暂丢线不会卡死）

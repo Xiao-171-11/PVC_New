@@ -350,6 +350,20 @@ void Control_Tick(void)
         error = 0.0f;
     }
 
+    /* ---- 直道调姿幅度收窄 5%（只影响直道）----
+     * 直道上舵机靠 440/474 两档小幅修正，把这 5% 收掉以后：
+     * 同样的偏差只打 95% 的角，440/474 的进档点整体后移，
+     * 车在直道上不会因为中线抖动而频繁蹭档，方向盘更稳。
+     * 判据直接用中线层本帧的结论（turn==0 且不在路口状态机里），不引入新的时间常数；
+     * 弯道（418/500）与路口（强制 460）原样不动。 */
+    float steer_err = error;
+#if (1 == CONTROL_STRAIGHT_STEER_EN)
+    if((0 == midline_info.turn) && (MIDLINE_CROSS_ST_NONE == midline_info.cross_state))
+    {
+        steer_err = error * CONTROL_STRAIGHT_STEER_SCALE;
+    }
+#endif
+
     // 3. 舵机：中线加权偏差 -> 分档打角（纯追踪已撤出流水线，CONTROL_PURSUIT_EN = 0）
 #if (1 == CONTROL_PURSUIT_EN)
     control_use_pursuit = Pursuit_Get(&control_ps);      // 0 = 纯追踪这一帧不可信（标定表没好/视野太差）
@@ -371,7 +385,7 @@ void Control_Tick(void)
     }
     else
     {
-        control_steer_demand = error * CONTROL_ERR_PX_TO_DEG;        // 正偏差 = 赛道偏右 = 往右打
+        control_steer_demand = steer_err * CONTROL_ERR_PX_TO_DEG;    // 正偏差 = 赛道偏右 = 往右打（直道已按 -5% 收窄）
     }
 
     if(midline_info.cross_state == MIDLINE_CROSS_ST_INSIDE)          // 路口内
@@ -404,7 +418,7 @@ void Control_Tick(void)
         {
             Servo_Clear_Hold();
         }
-        Servo_Set_Turn(error);
+        Servo_Set_Turn(steer_err);
     }
 #endif
 
